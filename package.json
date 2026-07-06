@@ -1,0 +1,23 @@
+{
+  "name": "database-uploader",
+  "version": "1.0.0",
+  "description": "Automatically dumps a MySQL database and uploads the backup to Amazon S3 daily at 05:00 AM.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "backup": "node index.js --now"
+  },
+  "keywords": [
+    "mysql",
+    "backup",
+    "s3",
+    "cron"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.632.0",
+    "dotenv": "^16.4.5",
+    "mysqldump": "^3.2.0",
+    "node-cron": "^3.0.3"
+  }
+}
