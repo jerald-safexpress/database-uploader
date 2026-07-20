@@ -2,6 +2,7 @@ const http = require("http");
 const { URL } = require("url");
 const { readLogLines, readRawLog, loadRuns, LOG_DIR, LOG_FILE } = require("./logger");
 const { getBackupSlot, loadDatabases } = require("./backup");
+const { listS3Backups } = require("./s3List");
 
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body, null, 2);
@@ -26,6 +27,14 @@ function sendHtml(res, status, html) {
     "Access-Control-Allow-Origin": "*",
   });
   res.end(html);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function getLogs(url) {
@@ -60,6 +69,63 @@ function getStatus() {
   };
 }
 
+function backupsTableHtml(data) {
+  const rows = (data.backups || [])
+    .map(
+      (b) => `<tr>
+      <td>${escapeHtml(b.databaseName)}</td>
+      <td>${escapeHtml(b.slot || "—")}</td>
+      <td>${escapeHtml(b.uploadedAtLocal || b.uploadedAt || "—")}</td>
+      <td>${escapeHtml(b.fileName)}</td>
+      <td>${escapeHtml(b.sizeKb)} KB</td>
+    </tr>`
+    )
+    .join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>S3 Backup List</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 24px; }
+    h1 { margin: 0 0 8px; font-size: 1.4rem; }
+    .meta { color: #666; margin-bottom: 16px; }
+    table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+    th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; }
+    th { background: #f5f5f5; }
+    tr:nth-child(even) { background: #fafafa; }
+    a { color: #0b57d0; }
+  </style>
+</head>
+<body>
+  <h1>S3 Backups — Uploaded Databases</h1>
+  <p class="meta">
+    Bucket: <strong>${escapeHtml(data.bucket)}</strong>
+    · ${data.count} file(s)
+    · timezone ${escapeHtml(data.timezone)}
+    · <a href="/api/backups">JSON</a>
+    · <a href="/logs/view">Logs</a>
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Database Name</th>
+        <th>Slot</th>
+        <th>Date and Time Uploaded</th>
+        <th>File</th>
+        <th>Size</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows || `<tr><td colspan="5">No backups found in S3.</td></tr>`}
+    </tbody>
+  </table>
+</body>
+</html>`;
+}
+
 function logsViewerHtml() {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -74,16 +140,20 @@ function logsViewerHtml() {
     .meta { color: #666; margin-bottom: 16px; }
     .tabs button { margin-right: 8px; padding: 6px 12px; cursor: pointer; }
     pre { background: #111; color: #eee; padding: 12px; overflow: auto; border-radius: 8px; max-height: 70vh; }
-    .ok { color: #1a7f37; }
-    .err { color: #cf222e; }
   </style>
 </head>
 <body>
   <h1>Database Uploader — Logs</h1>
-  <p class="meta">GET API · refresh every 15s · <a href="/api/logs">/api/logs</a> · <a href="/api/logs/runs">/api/logs/runs</a></p>
+  <p class="meta">
+    GET API · refresh every 15s ·
+    <a href="/api/logs">/api/logs</a> ·
+    <a href="/api/backups">/api/backups</a> ·
+    <a href="/api/backups/view">S3 list</a>
+  </p>
   <div class="tabs">
     <button type="button" data-src="/api/logs?limit=100">Logs</button>
     <button type="button" data-src="/api/logs/runs?limit=20">Runs</button>
+    <button type="button" data-src="/api/backups">S3 Backups</button>
     <button type="button" data-src="/api/status">Status</button>
     <button type="button" data-src="/api/logs/raw" data-raw="1">Raw</button>
   </div>
@@ -116,7 +186,7 @@ function logsViewerHtml() {
 }
 
 function createServer() {
-  return http.createServer((req, res) => {
+  return http.createServer(async (req, res) => {
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
@@ -129,7 +199,7 @@ function createServer() {
     if (req.method !== "GET") {
       return sendJson(res, 405, {
         error: "Method not allowed",
-        hint: "Use GET /api/logs or GET /logs",
+        hint: "Use GET /api/logs or GET /api/backups",
       });
     }
 
@@ -137,32 +207,27 @@ function createServer() {
     const pathName = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
-      // Home / docs
       if (pathName === "/" || pathName === "/api") {
         return sendJson(res, 200, {
           name: "database-uploader",
-          message: "Logs GET API",
+          message: "Logs + S3 backups GET API",
           endpoints: {
+            "GET /api/backups": "List S3 uploads (Database Name + Date/Time)",
+            "GET /api/backups/view": "HTML table of S3 uploads",
             "GET /api/logs": "Recent log entries (JSON). ?limit=&level=",
             "GET /api/logs/runs": "Backup run history (JSON). ?limit=",
             "GET /api/logs/raw": "Raw backup.log text",
             "GET /api/status": "Current slot, databases, schedule",
             "GET /api/health": "Health check",
             "GET /logs/view": "Browser log viewer (HTML)",
-            "GET /logs": "Alias of /api/logs",
-            "GET /logs/runs": "Alias of /api/logs/runs",
-            "GET /health": "Alias of /api/health",
-            "GET /status": "Alias of /api/status",
           },
         });
       }
 
-      // HTML viewer
       if (pathName === "/logs/view" || pathName === "/view") {
         return sendHtml(res, 200, logsViewerHtml());
       }
 
-      // Health
       if (pathName === "/health" || pathName === "/api/health") {
         return sendJson(res, 200, {
           ok: true,
@@ -170,31 +235,53 @@ function createServer() {
         });
       }
 
-      // Status
       if (pathName === "/status" || pathName === "/api/status") {
         return sendJson(res, 200, getStatus());
       }
 
-      // GET logs (JSON)
       if (pathName === "/logs" || pathName === "/api/logs") {
         return sendJson(res, 200, getLogs(url));
       }
 
-      // GET raw log file
       if (pathName === "/logs/raw" || pathName === "/api/logs/raw") {
         const raw = readRawLog();
         return sendText(res, 200, raw || "(no logs yet)\n");
       }
 
-      // GET run history
       if (pathName === "/logs/runs" || pathName === "/api/logs/runs") {
         return sendJson(res, 200, getRuns(url));
+      }
+
+      // S3 backup list (JSON)
+      if (pathName === "/backups" || pathName === "/api/backups") {
+        const data = await listS3Backups();
+        const list = data.backups.map((b) => ({
+          databaseName: b.databaseName,
+          slot: b.slot,
+          uploadedAt: b.uploadedAtLocal || b.uploadedAt,
+          uploadedAtUtc: b.uploadedAt,
+          fileName: b.fileName,
+          sizeKb: b.sizeKb,
+          s3Key: b.s3Key,
+        }));
+        return sendJson(res, 200, {
+          bucket: data.bucket,
+          timezone: data.timezone,
+          count: list.length,
+          backups: list,
+        });
+      }
+
+      // S3 backup list (HTML table)
+      if (pathName === "/backups/view" || pathName === "/api/backups/view") {
+        const data = await listS3Backups();
+        return sendHtml(res, 200, backupsTableHtml(data));
       }
 
       return sendJson(res, 404, {
         error: "Not found",
         path: pathName,
-        try: ["/api/logs", "/api/logs/runs", "/logs/view", "/api/health"],
+        try: ["/api/backups", "/api/backups/view", "/api/logs", "/api/health"],
       });
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
@@ -209,9 +296,9 @@ function startApiServer() {
 
   server.listen(port, host, () => {
     console.log(`[api] Log API listening on http://${host}:${port}`);
+    console.log(`[api] GET  http://localhost:${port}/api/backups`);
+    console.log(`[api] VIEW http://localhost:${port}/api/backups/view`);
     console.log(`[api] GET  http://localhost:${port}/api/logs`);
-    console.log(`[api] GET  http://localhost:${port}/api/logs/runs`);
-    console.log(`[api] VIEW http://localhost:${port}/logs/view`);
   });
 
   return server;

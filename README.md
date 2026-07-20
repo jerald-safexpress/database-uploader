@@ -67,6 +67,8 @@ When the app is running (`npm start` or PM2), use these **GET** endpoints
 
 | Method | URL | Description |
 | ------ | --- | ----------- |
+| `GET` | `/api/backups` | List S3 uploads (Database Name + Date/Time) |
+| `GET` | `/api/backups/view` | HTML table of S3 uploads |
 | `GET` | `/api/logs` | Recent log entries (JSON) |
 | `GET` | `/api/logs?limit=50&level=error` | Filter logs |
 | `GET` | `/api/logs/runs` | Backup run history |
