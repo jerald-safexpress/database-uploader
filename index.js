@@ -1,8 +1,10 @@
 require("dotenv").config();
 const cron = require("node-cron");
 const { runBackup } = require("./backup");
+const { startApiServer } = require("./server");
+const { logger } = require("./logger");
 
-const schedule = process.env.CRON_SCHEDULE || "0 5 * * *";
+const schedule = process.env.CRON_SCHEDULE || "0 */3 * * *";
 const timezone = process.env.TZ || "Asia/Singapore";
 
 // Run once immediately and exit: `npm run backup` or `node index.js --now`
@@ -16,15 +18,21 @@ if (process.argv.includes("--now")) {
     process.exit(1);
   }
 
-  console.log("Database uploader started.");
-  console.log(`Schedule: "${schedule}" (timezone: ${timezone})`);
+  startApiServer();
+
+  logger.info("Database uploader started", {
+    schedule,
+    timezone,
+    apiPort: Number(process.env.API_PORT || 3050),
+  });
+  console.log("Every 3 hours → alternate DatabaseName_1st / DatabaseName_2nd (overwrite).");
   console.log("Waiting for the next scheduled run. Press Ctrl+C to stop.");
 
   cron.schedule(
     schedule,
     () => {
       runBackup().catch((err) =>
-        console.error(`[error] Scheduled backup failed: ${err.message}`)
+        logger.error(`Scheduled backup failed: ${err.message}`, { error: err.message })
       );
     },
     { timezone }

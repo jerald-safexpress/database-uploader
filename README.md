@@ -1,85 +1,132 @@
 # Database Uploader
 
-Automatically dumps a **MySQL** database and uploads the backup to **Amazon S3**,
-every day at **05:00 AM**.
+Automatically dumps one or more **MySQL** databases and uploads the backups to
+**Amazon S3**, every **3 hours**.
 
 ## How it works
 
-1. `mysqldump` (pure JS, no external binary needed) exports the database to a
+1. `mysqldump` (pure JS, no external binary needed) exports each database to a
    `.sql.gz` file in `./backups`.
 2. The file is uploaded to your S3 bucket under `S3_PREFIX/`.
 3. The local copy is deleted after a successful upload (configurable).
-4. A cron scheduler (`node-cron`) triggers the whole run daily at 05:00 AM.
+4. A cron scheduler (`node-cron`) runs every 3 hours and **alternates** two
+   fixed S3 object names so only two copies exist per database:
+
+| Time window (Asia/Singapore) | S3 filename              |
+| ---------------------------- | ------------------------ |
+| 00:00, 06:00, 12:00, 18:00   | `DatabaseName_1st.sql.gz` |
+| 03:00, 09:00, 15:00, 21:00   | `DatabaseName_2nd.sql.gz` |
+
+Each upload **overwrites** the previous file in that slot.
+
+Example for `ESV_EXPRESS_WMS`:
+
+- `s3://bucket/ESV_EXPRESS_WMS_1st.sql.gz`
+- `s3://bucket/ESV_EXPRESS_WMS_2nd.sql.gz`
 
 ## Setup
 
 ```bash
-cd C:\nginx\html\database-uploader
+cd /var/www/html/database-uploader
 npm install
 ```
 
 Then open `.env` and fill in the required values. **You must set:**
 
-- `DB_NAME` – the name of the database to back up.
 - `S3_BUCKET` – the destination S3 bucket name.
 
-All other values are pre-filled from what you provided.
+Add the databases to back up in `databases.json`:
+
+```json
+[
+  { "name": "ESV_EXPRESS_WMS" },
+  { "name": "UNICEF_EXPRESS_WMS" }
+]
+```
+
+To add more later, append another `{ "name": "..." }` entry to the array.
 
 ## Usage
 
-Run a backup right now (test):
+Run a backup right now (test) — uses the current 3-hour slot (`1st` or `2nd`):
 
 ```bash
 npm run backup
 ```
 
-Start the scheduler (keeps running, fires daily at 05:00 AM):
+Start the scheduler + log API (keeps running, fires every 3 hours):
 
 ```bash
 npm start
 ```
 
+## Logs & GET API
+
+Every backup writes to `./logs/backup.log` (JSON lines) and `./logs/runs.json`
+(run history). When you run `npm start`, an HTTP API is available:
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET` | `/` | List of endpoints |
+| `GET` | `/health` | Health check |
+| `GET` | `/status` | Current slot, databases, schedule |
+| `GET` | `/logs` | Recent log entries (JSON) |
+| `GET` | `/logs?limit=50&level=error` | Filter logs |
+| `GET` | `/logs/raw` | Raw `backup.log` text |
+| `GET` | `/logs/runs` | Backup run history |
+
+Examples:
+
+```bash
+curl http://localhost:3050/logs
+curl http://localhost:3050/logs/runs
+curl "http://localhost:3050/logs?limit=20&level=error"
+curl http://localhost:3050/status
+```
+
+API-only (no cron):
+
+```bash
+npm run api
+```
+
 ## Configuration (.env)
 
-| Variable                    | Description                                        | Default            |
-| --------------------------- | -------------------------------------------------- | ------------------ |
-| `DB_HOST`                   | MySQL host                                         | —                  |
-| `DB_PORT`                   | MySQL port                                         | `3306`             |
-| `DB_USER`                   | MySQL user                                         | —                  |
-| `DB_PASSWORD`               | MySQL password                                     | —                  |
-| `DB_NAME`                   | Database to back up (**required**)                 | —                  |
-| `AWS_REGION`                | S3 region                                          | `ap-southeast-1`   |
-| `AWS_ACCESS_KEY_ID`         | AWS access key                                     | —                  |
-| `AWS_SECRET_ACCESS_KEY`     | AWS secret key                                     | —                  |
-| `S3_BUCKET`                 | Destination bucket (**required**)                  | —                  |
-| `S3_PREFIX`                 | Folder prefix inside the bucket                    | `database-backups` |
-| `CRON_SCHEDULE`             | Cron expression                                    | `0 5 * * *`        |
-| `TZ`                        | Timezone for the schedule                          | `Asia/Singapore`   |
-| `BACKUP_DIR`                | Local dump folder                                  | `./backups`        |
-| `DELETE_LOCAL_AFTER_UPLOAD` | Delete local dump after upload                     | `true`             |
-| `GZIP`                      | Gzip the dump before uploading                     | `true`             |
+| Variable                    | Description                                         | Default            |
+| --------------------------- | --------------------------------------------------- | ------------------ |
+| `DB_HOST`                   | MySQL host                                          | —                  |
+| `DB_PORT`                   | MySQL port                                          | `3306`             |
+| `DB_USER`                   | MySQL user                                          | —                  |
+| `DB_PASSWORD`               | MySQL password                                      | —                  |
+| `DB_NAME`                   | Single-database fallback if `databases.json` absent | —                  |
+| `DATABASES_FILE`            | Path to database list JSON                          | `./databases.json` |
+| `AWS_REGION`                | S3 region                                           | `ap-southeast-1`   |
+| `AWS_ACCESS_KEY_ID`         | AWS access key                                      | —                  |
+| `AWS_SECRET_ACCESS_KEY`     | AWS secret key                                      | —                  |
+| `S3_BUCKET`                 | Destination bucket (**required**)                   | —                  |
+| `S3_PREFIX`                 | Folder prefix inside the bucket                     | _(empty)_          |
+| `CRON_SCHEDULE`             | Cron expression                                     | `0 */3 * * *`      |
+| `TZ`                        | Timezone for schedule + 1st/2nd slot                | `Asia/Singapore`   |
+| `BACKUP_DIR`                | Local dump folder                                   | `./backups`        |
+| `DELETE_LOCAL_AFTER_UPLOAD` | Delete local dump after upload                      | `true`             |
+| `GZIP`                      | Gzip the dump before uploading                      | `true`             |
+| `LOG_DIR`                   | Folder for log files                                | `./logs`           |
+| `API_PORT`                  | HTTP port for the log GET API                       | `3050`             |
+| `API_HOST`                  | HTTP bind address                                   | `0.0.0.0`          |
 
-## Running 24/7 on Windows
+## Running 24/7 on Linux
 
 `npm start` only runs while the terminal is open. To keep it running in the
-background and restart on boot, use one of:
+background and restart on boot, use **PM2**:
 
-- **PM2** (recommended):
-
-  ```bash
-  npm install -g pm2 pm2-windows-startup
-  pm2 start index.js --name database-uploader
-  pm2 save
-  pm2-startup install
-  ```
-
-- **Windows Task Scheduler**: create a task that runs
-  `node C:\nginx\html\database-uploader\index.js` at logon (for the scheduler),
-  or run `node index.js --now` directly at 05:00 AM daily (no need to keep a
-  process alive).
+```bash
+sudo npm install -g pm2
+pm2 start index.js --name database-uploader
+pm2 save
+pm2 startup
+```
 
 ## Security note
 
 The credentials live in `.env`, which is excluded from git via `.gitignore`.
-Because these credentials were shared in plain text, rotate the AWS access key
-and the database password once everything works.
+Do not commit `.env` to GitHub.

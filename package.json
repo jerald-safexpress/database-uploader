@@ -1,11 +1,12 @@
 {
   "name": "database-uploader",
   "version": "1.0.0",
-  "description": "Automatically dumps a MySQL database and uploads the backup to Amazon S3 daily at 05:00 AM.",
+  "description": "Automatically dumps MySQL databases and uploads rotating 1st/2nd backups to Amazon S3 every 3 hours.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "backup": "node index.js --now"
+    "backup": "node index.js --now",
+    "api": "node -e \"require('dotenv').config(); require('./server').startApiServer()\""
   },
   "keywords": [
     "mysql",
