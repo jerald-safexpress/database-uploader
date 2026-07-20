@@ -312,25 +312,34 @@ function createServer() {
         return sendJson(res, 200, getRuns(url));
       }
 
-      // S3 backup list (JSON)
+      // S3 backup list (JSON) — for Angular / Postman
       if (pathName === "/backups" || pathName === "/api/backups") {
         const data = await listS3Backups();
         const nextBackup = getNextBackupInfo();
         const list = data.backups.map((b) => ({
           databaseName: b.databaseName,
           slot: b.slot,
-          uploadedAt: b.uploadedAtLocal || b.uploadedAt,
+          dateTimeUploaded: b.uploadedAtLocal || b.uploadedAt,
           uploadedAtUtc: b.uploadedAt,
           fileName: b.fileName,
           sizeKb: b.sizeKb,
+          sizeBytes: b.sizeBytes,
           s3Key: b.s3Key,
         }));
         return sendJson(res, 200, {
+          success: true,
           bucket: data.bucket,
           timezone: data.timezone,
-          nextBackup,
           count: list.length,
-          backups: list,
+          nextBackup: {
+            nextAt: nextBackup.nextAt,
+            nextAtLocal: nextBackup.nextAtLocal,
+            nextSlot: nextBackup.nextSlot,
+            schedule: nextBackup.schedule,
+            timezone: nextBackup.timezone,
+            msUntil: nextBackup.msUntil,
+          },
+          data: list,
         });
       }
 
