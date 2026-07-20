@@ -63,6 +63,73 @@ function getBackupSlot(date = new Date()) {
   return Math.floor(hour / 3) % 2 === 0 ? "1st" : "2nd";
 }
 
+/** Parts of `date` in the configured timezone. */
+function getTzParts(date, timeZone = process.env.TZ || "Asia/Singapore") {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  let hour = Number(get("hour"));
+  if (hour === 24) hour = 0;
+  return {
+    year: Number(get("year")),
+    month: Number(get("month")),
+    day: Number(get("day")),
+    hour,
+    minute: Number(get("minute")),
+    second: Number(get("second")),
+  };
+}
+
+/**
+ * Next run for default schedule every 3 hours at minute 0 (cron: 0 star-slash-3 star star star)
+ * in the configured timezone. Accurate for fixed-offset zones (e.g. Asia/Singapore).
+ */
+function getNextBackupInfo(fromDate = new Date()) {
+  const timeZone = process.env.TZ || "Asia/Singapore";
+  const schedule = process.env.CRON_SCHEDULE || "0 */3 * * *";
+  const runHours = [0, 3, 6, 9, 12, 15, 18, 21];
+  const p = getTzParts(fromDate, timeZone);
+
+  let dayOffset = 0;
+  let targetHour = runHours.find((h) => h > p.hour);
+
+  // Exactly on a run time → countdown to the following run
+  if (runHours.includes(p.hour) && p.minute === 0 && p.second === 0) {
+    const idx = runHours.indexOf(p.hour);
+    targetHour = runHours[(idx + 1) % runHours.length];
+    dayOffset = idx === runHours.length - 1 ? 1 : 0;
+  } else if (targetHour === undefined) {
+    targetHour = 0;
+    dayOffset = 1;
+  }
+
+  const nowSec = p.hour * 3600 + p.minute * 60 + p.second;
+  let deltaSec = targetHour * 3600 - nowSec + dayOffset * 86400;
+  if (deltaSec <= 0) deltaSec += 86400;
+
+  const nextAt = new Date(fromDate.getTime() + deltaSec * 1000);
+  const local = getTzParts(nextAt, timeZone);
+  const pad = (n) => String(n).padStart(2, "0");
+  const nextAtLocal = `${local.year}-${pad(local.month)}-${pad(local.day)} ${pad(local.hour)}:${pad(local.minute)}:${pad(local.second)}`;
+
+  return {
+    schedule,
+    timezone: timeZone,
+    nextAt: nextAt.toISOString(),
+    nextAtLocal,
+    nextSlot: getBackupSlot(nextAt),
+    msUntil: Math.max(0, nextAt.getTime() - fromDate.getTime()),
+  };
+}
+
 async function gzipFile(sourcePath, destPath) {
   await pipeline(
     fs.createReadStream(sourcePath),
@@ -223,4 +290,4 @@ async function runBackup() {
   });
 }
 
-module.exports = { runBackup, loadDatabases, getBackupSlot };
+module.exports = { runBackup, loadDatabases, getBackupSlot, getNextBackupInfo };

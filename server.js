@@ -1,7 +1,7 @@
 const http = require("http");
 const { URL } = require("url");
 const { readLogLines, readRawLog, loadRuns, LOG_DIR, LOG_FILE } = require("./logger");
-const { getBackupSlot, loadDatabases } = require("./backup");
+const { getBackupSlot, loadDatabases, getNextBackupInfo } = require("./backup");
 const { listS3Backups } = require("./s3List");
 
 function sendJson(res, status, body) {
@@ -62,6 +62,7 @@ function getStatus() {
     timezone: process.env.TZ || "Asia/Singapore",
     schedule: process.env.CRON_SCHEDULE || "0 */3 * * *",
     currentSlot: getBackupSlot(),
+    nextBackup: getNextBackupInfo(),
     databases,
     logDir: LOG_DIR,
     logFile: LOG_FILE,
@@ -69,7 +70,7 @@ function getStatus() {
   };
 }
 
-function backupsTableHtml(data) {
+function backupsTableHtml(data, nextBackup) {
   const rows = (data.backups || [])
     .map(
       (b) => `<tr>
@@ -89,9 +90,18 @@ function backupsTableHtml(data) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>S3 Backup List</title>
   <style>
-    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 24px; }
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 24px; color: #1a1a1a; }
     h1 { margin: 0 0 8px; font-size: 1.4rem; }
     .meta { color: #666; margin-bottom: 16px; }
+    .countdown {
+      display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: center;
+      background: #0f172a; color: #f8fafc; border-radius: 12px;
+      padding: 18px 22px; margin: 0 0 20px; max-width: 1100px;
+    }
+    .countdown .label { font-size: 0.85rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.04em; }
+    .countdown .timer { font-size: 2rem; font-variant-numeric: tabular-nums; font-weight: 700; letter-spacing: 0.02em; }
+    .countdown .detail { font-size: 0.95rem; color: #cbd5e1; }
+    .countdown .detail strong { color: #fff; }
     table { border-collapse: collapse; width: 100%; max-width: 1100px; }
     th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; }
     th { background: #f5f5f5; }
@@ -108,6 +118,25 @@ function backupsTableHtml(data) {
     · <a href="/api/backups">JSON</a>
     · <a href="/logs/view">Logs</a>
   </p>
+
+  <div class="countdown" id="countdown"
+       data-next-at="${escapeHtml(nextBackup.nextAt)}"
+       data-next-local="${escapeHtml(nextBackup.nextAtLocal)}"
+       data-next-slot="${escapeHtml(nextBackup.nextSlot)}"
+       data-schedule="${escapeHtml(nextBackup.schedule)}"
+       data-timezone="${escapeHtml(nextBackup.timezone)}">
+    <div>
+      <div class="label">Next backup in</div>
+      <div class="timer" id="timer">--:--:--</div>
+    </div>
+    <div class="detail">
+      Scheduled: <strong id="nextLocal">${escapeHtml(nextBackup.nextAtLocal)}</strong>
+      (${escapeHtml(nextBackup.timezone)})<br />
+      Slot: <strong id="nextSlot">${escapeHtml(nextBackup.nextSlot)}</strong>
+      · Cron: <code>${escapeHtml(nextBackup.schedule)}</code>
+    </div>
+  </div>
+
   <table>
     <thead>
       <tr>
@@ -122,6 +151,37 @@ function backupsTableHtml(data) {
       ${rows || `<tr><td colspan="5">No backups found in S3.</td></tr>`}
     </tbody>
   </table>
+
+  <script>
+    (function () {
+      const el = document.getElementById('countdown');
+      const timerEl = document.getElementById('timer');
+      const nextLocalEl = document.getElementById('nextLocal');
+      const nextSlotEl = document.getElementById('nextSlot');
+      let nextAt = new Date(el.dataset.nextAt).getTime();
+
+      function pad(n) { return String(n).padStart(2, '0'); }
+
+      function render() {
+        const ms = nextAt - Date.now();
+        if (ms <= 0) {
+          timerEl.textContent = '00:00:00';
+          timerEl.style.color = '#4ade80';
+          // Refresh page shortly after due time so list + next countdown update
+          setTimeout(function () { location.reload(); }, 2000);
+          return;
+        }
+        const totalSec = Math.floor(ms / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        timerEl.textContent = pad(h) + ':' + pad(m) + ':' + pad(s);
+      }
+
+      render();
+      setInterval(render, 1000);
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -255,6 +315,7 @@ function createServer() {
       // S3 backup list (JSON)
       if (pathName === "/backups" || pathName === "/api/backups") {
         const data = await listS3Backups();
+        const nextBackup = getNextBackupInfo();
         const list = data.backups.map((b) => ({
           databaseName: b.databaseName,
           slot: b.slot,
@@ -267,6 +328,7 @@ function createServer() {
         return sendJson(res, 200, {
           bucket: data.bucket,
           timezone: data.timezone,
+          nextBackup,
           count: list.length,
           backups: list,
         });
@@ -275,7 +337,8 @@ function createServer() {
       // S3 backup list (HTML table)
       if (pathName === "/backups/view" || pathName === "/api/backups/view") {
         const data = await listS3Backups();
-        return sendHtml(res, 200, backupsTableHtml(data));
+        const nextBackup = getNextBackupInfo();
+        return sendHtml(res, 200, backupsTableHtml(data, nextBackup));
       }
 
       return sendJson(res, 404, {
