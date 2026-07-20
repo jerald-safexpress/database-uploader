@@ -60,29 +60,35 @@ Start the scheduler + log API (keeps running, fires every 3 hours):
 npm start
 ```
 
-## Logs & GET API
+## Logs GET API
 
-Every backup writes to `./logs/backup.log` (JSON lines) and `./logs/runs.json`
-(run history). When you run `npm start`, an HTTP API is available:
+When the app is running (`npm start` or PM2), use these **GET** endpoints
+(default port **3050**):
 
-| Method | Path | Description |
-| ------ | ---- | ----------- |
-| `GET` | `/` | List of endpoints |
-| `GET` | `/health` | Health check |
-| `GET` | `/status` | Current slot, databases, schedule |
-| `GET` | `/logs` | Recent log entries (JSON) |
-| `GET` | `/logs?limit=50&level=error` | Filter logs |
-| `GET` | `/logs/raw` | Raw `backup.log` text |
-| `GET` | `/logs/runs` | Backup run history |
+| Method | URL | Description |
+| ------ | --- | ----------- |
+| `GET` | `/api/logs` | Recent log entries (JSON) |
+| `GET` | `/api/logs?limit=50&level=error` | Filter logs |
+| `GET` | `/api/logs/runs` | Backup run history |
+| `GET` | `/api/logs/raw` | Raw `backup.log` text |
+| `GET` | `/api/status` | Current slot + databases |
+| `GET` | `/api/health` | Health check |
+| `GET` | `/logs/view` | Browser log viewer (HTML) |
 
-Examples:
+Aliases without `/api` also work: `/logs`, `/logs/runs`, `/health`, `/status`.
 
 ```bash
-curl http://localhost:3050/logs
-curl http://localhost:3050/logs/runs
-curl "http://localhost:3050/logs?limit=20&level=error"
-curl http://localhost:3050/status
+# start (scheduler + API)
+npm start
+
+# call the GET logs API
+curl http://localhost:3050/api/logs
+curl http://localhost:3050/api/logs/runs
+curl http://localhost:3050/api/status
 ```
+
+Open in a browser: `http://YOUR_SERVER_IP:3050/logs/view`  
+(open port **3050** in the AWS security group, or use an SSH tunnel).
 
 API-only (no cron):
 
